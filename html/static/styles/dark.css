@@ -1,0 +1,65 @@
+/* Dark Theme */
+.message {
+	background: #2f2a2a !important;
+	color: white;
+}
+
+body, a,
+.prefix, .prefix strong,
+#users li, #users li strong,
+.chat-form .form-control{
+	color: white !important;
+}
+
+body,
+.chat-form,
+.chat-form .form-control {
+	background: #1f1b1b;
+	scrollbar-color: rgb(127 63 152) rgb(69, 69, 69);
+}
+
+.login-form,
+.login-form .form-control {
+    max-width: 600px;
+} 
+
+#send,
+.chat-form .form-control,
+#emic{
+	border-color: #7f3f98;
+}
+
+#emic {
+	background-color: #1f1b1b;
+}
+
+#emic_btn{
+	background:#7f3f98;
+}
+
+.chat {
+	border: rgb(127 63 152);
+	border-style: solid;
+	border-top: none;
+	border-bottom: none;
+}
+
+/* Login Container */
+#login-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh; /* Full viewport height */
+  width: 100%;
+  background: #1f1b1b;
+}
+
+.login-form {
+  background: #2f2a2a;
+  padding: 2rem;
+  border-radius: 8px;
+  border: 1px solid #7f3f98;
+  width: 300px; /* Fixed width for better centering */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+}
+
