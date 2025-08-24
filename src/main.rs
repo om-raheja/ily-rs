@@ -101,20 +101,21 @@ async fn on_login(s: SocketRef, Data(data): Data<LoginData>,
             let password_hash: String = row.password_hash;
             
             if verify(&password, &password_hash).unwrap_or(false) {
-                let mut users = state.users.lock().unwrap();
-                let is_new = users.insert(nick.clone());
-                
-                s.extensions.insert(Username(nick.clone()));
-                s.join("main");
-                
-                s.emit("start", &StartEvent {
-                    users: users.iter().cloned().collect(),
-                }).ok();
-                
-                /*
-                if is_new {
-                    s.broadcast().to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
+                if let Ok(mut users) = state.users.lock() {
+                    let is_new = users.insert(nick.clone());
+
+                    s.extensions.insert(Username(nick.clone()));
+                    s.join("main");
+
+                    s.emit("start", &StartEvent {
+                        users: users.iter().cloned().collect(),
+                    }).ok();
+
+                    if is_new {
+                        s.broadcast().to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
+                    }
                 }
+                
                 
                 let view_history: bool = row.view_history;
                 if view_history {
@@ -135,8 +136,7 @@ async fn on_login(s: SocketRef, Data(data): Data<LoginData>,
                         
                         s.emit("previous-msg", &PreviousMsgEvent { msgs }).ok();
                     }
-                }
-                */
+                } 
             } else {
                 s.emit("force-login", &ForceLoginEvent {
                     error_type: "login".to_string(),
@@ -226,9 +226,9 @@ async fn on_load_more_messages(s: SocketRef, Data(data): Data<LoadMoreMessagesDa
 
 async fn on_disconnect(s: SocketRef, State(state): State<Arc<SharedState>>) {
     if let Some(Username(nick)) = s.extensions.remove::<Username>() {
-        let mut users = state.users.lock().unwrap();
-        users.remove(&nick);
-        
+        if let Ok(mut users) = state.users.lock() {
+            users.remove(&nick);
+        }
         s.to("main").emit("ul", &UserEvent { nick }).await.ok();
     }
 }
