@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use socketioxide::{
-    extract::{Data, SocketRef},
+    extract::{Data, SocketRef, State},
     SocketIo,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -77,8 +77,8 @@ struct ForceLoginEvent {
     message: String,
 }
 
-async fn on_login(s: SocketRef, Data(data): Data<LoginData>) {
-    let state = s.extensions.get::<Arc<SharedState>>().unwrap().clone();
+async fn on_login(s: SocketRef, Data(data): Data<LoginData>,
+        State(state): State<Arc<SharedState>>) {
     let nick = data.nick.trim().to_string();
     let password = data.password.trim().to_string();
 
@@ -160,8 +160,7 @@ async fn on_login(s: SocketRef, Data(data): Data<LoginData>) {
     }
 }
 
-async fn on_send_msg(s: SocketRef, Data(data): Data<SendMsgData>) {
-    let state = s.extensions.get::<Arc<SharedState>>().unwrap().clone();
+async fn on_send_msg(s: SocketRef, Data(data): Data<SendMsgData>, State(state): State<Arc<SharedState>>) {
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
         let message_json = serde_json::to_string(&data.m).unwrap_or_default();
         
@@ -197,8 +196,8 @@ async fn on_typing(s: SocketRef, Data(data): Data<TypingData>) {
     }
 }
 
-async fn on_load_more_messages(s: SocketRef, Data(data): Data<LoadMoreMessagesData>) {
-    let state = s.extensions.get::<Arc<SharedState>>().unwrap().clone();
+async fn on_load_more_messages(s: SocketRef, Data(data): Data<LoadMoreMessagesData>,
+        State(state): State<Arc<SharedState>>) {
     if let Some(Username(_)) = s.extensions.get::<Username>() {
         let query = if let Some(last) = data.last {
             sqlx::query("SELECT username, message, sent_at, id FROM messages WHERE id < $1 ORDER BY id DESC LIMIT $2")
@@ -225,8 +224,7 @@ async fn on_load_more_messages(s: SocketRef, Data(data): Data<LoadMoreMessagesDa
     }
 }
 
-async fn on_disconnect(s: SocketRef) {
-    let state = s.extensions.get::<Arc<SharedState>>().unwrap().clone();
+async fn on_disconnect(s: SocketRef, State(state): State<Arc<SharedState>>) {
     if let Some(Username(nick)) = s.extensions.remove::<Username>() {
         let mut users = state.users.lock().unwrap();
         users.remove(&nick);
