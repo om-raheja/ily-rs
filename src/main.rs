@@ -119,7 +119,7 @@ async fn on_login(
                     }).ok();
 
                     if is_new {
-                        s.broadcast().to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
+                        s.to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
                     }
                 }
                 
