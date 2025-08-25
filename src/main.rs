@@ -27,14 +27,14 @@ struct SharedState {
 struct Username(String);
 
 #[derive(Deserialize, Serialize)]
-struct LoginData {
-    nick: String,
-    password: String,
+struct LoginData<'a> {
+    nick: &'a str,
+    password: &'a str,
 }
 
 #[derive(Deserialize)]
-struct SendMsgData {
-    m: String,
+struct SendMsgData<'a> {
+    m: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -48,26 +48,32 @@ struct LoadMoreMessagesData {
 }
 
 #[derive(Serialize)]
-struct StartEvent {
-    users: Vec<String>,
+struct StartEvent<'a, T>
+where
+    T: IntoIterator<Item = String> + Serialize,
+{
+    users: &'a T,
 }
 
 #[derive(Serialize)]
-struct UserEvent {
-    nick: String,
+struct UserEvent<'a> {
+    nick: &'a str,
 }
 
 #[derive(Serialize)]
-struct MessageEvent {
-    f: String,
+struct MessageEvent<'a> {
+    f: &'a str,
     m: serde_json::Value,
     id: i32,
     time: i64,
 }
 
 #[derive(Serialize)]
-struct PreviousMsgEvent {
-    msgs: Vec<MessageEvent>,
+struct PreviousMsgEvent<'a, T>
+where
+    T: IntoIterator<Item = MessageEvent<'a>>,
+{
+    msgs: &'a T,
 }
 
 #[derive(Serialize)]
@@ -77,13 +83,13 @@ struct ForceLoginEvent {
     message: String,
 }
 
-async fn on_login(
+async fn on_login<'a>(
     s: SocketRef,
-    Data(data): Data<LoginData>,
+    Data(data): Data<LoginData<'a>>,
     State(state): State<Arc<SharedState>>,
 ) {
-    let nick = data.nick.trim().to_string();
-    let password = data.password.trim().to_string();
+    let nick = data.nick.trim();
+    let password = data.password.trim();
 
     if nick.is_empty() {
         s.emit(
@@ -109,21 +115,21 @@ async fn on_login(
 
             if verify(&password, &password_hash).unwrap_or(false) {
                 if let Ok(mut users) = state.users.lock() {
-                    let is_new = users.insert(nick.clone());
+                    let is_new = users.insert(nick.to_string());
 
-                    s.extensions.insert(Username(nick.clone()));
+                    s.extensions.insert(Username(nick.to_string()));
                     s.join("main");
 
-                    s.emit("start", &StartEvent {
-                        users: users.iter().cloned().collect(),
-                    }).ok();
+                    s.emit("start", &StartEvent { users: &*users }).ok();
 
                     if is_new {
-                        s.to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
+                        s.to("main")
+                            .emit("ue", &UserEvent { nick: nick.clone() })
+                            .await
+                            .ok();
                     }
                 }
-                
-                
+
                 let view_history: bool = row.view_history;
                 if view_history {
                     if let Ok(rows) = sqlx::query("SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1")
@@ -143,7 +149,7 @@ async fn on_login(
 
                         s.emit("previous-msg", &PreviousMsgEvent { msgs }).ok();
                     }
-                } 
+                }
             } else {
                 s.emit(
                     "force-login",
