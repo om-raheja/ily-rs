@@ -11,6 +11,8 @@ use socketioxide::{
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
+use sqlx::types::BigDecimal;
+use num_traits::cast::ToPrimitive;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::info;
@@ -108,8 +110,9 @@ async fn on_login(
             let password_hash: String = row.password_hash;
 
             if verify(&password, &password_hash).unwrap_or(false) {
+                let mut is_new = false;
                 if let Ok(mut users) = state.users.lock() {
-                    let is_new = users.insert(nick.clone());
+                    is_new = users.insert(nick.clone());
 
                     s.extensions.insert(Username(nick.clone()));
                     s.join("main");
@@ -118,26 +121,31 @@ async fn on_login(
                         users: users.iter().cloned().collect(),
                     }).ok();
 
-                    if is_new {
-                        s.to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
-                    }
                 }
                 
+                if is_new {
+                    s.to("main").emit("ue", &UserEvent { nick: nick.clone() }).await.ok();
+                }
                 
                 let view_history: bool = row.view_history;
                 if view_history {
-                    if let Ok(rows) = sqlx::query("SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1")
-                        .bind(state.batch_size)
+                    if let Ok(rows) = sqlx::query!(
+                        "SELECT username, message, sent_at, id 
+                        FROM messages 
+                        ORDER BY id 
+                        DESC LIMIT $1",
+                        state.batch_size as i64
+                    )
                         .fetch_all(&state.db)
                         .await
                     {
                         let msgs: Vec<MessageEvent> = rows.into_iter().filter_map(|row| {
-                            let message: String = row.get("message");
-                            serde_json::from_str(&message).ok().map(|m| MessageEvent {
-                                f: row.get("username"),
+                            serde_json::from_str(&row.message).ok().map(|m| MessageEvent {
+                                f: row.username,
                                 m,
-                                id: row.get("id"),
-                                time: (row.get::<f64, _>("sent_at") * 1000.0) as i64,
+                                id: row.id,
+                                time: (row.sent_at.unwrap_or(BigDecimal::from(0)) 
+                                    * BigDecimal::from(1000)).to_i64().unwrap_or(0),
                             })
                         }).collect();
 
