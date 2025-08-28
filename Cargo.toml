@@ -7,6 +7,7 @@ edition = "2021"
 axum = "0.8.4"
 bcrypt = "0.17.1"
 dotenv = "0.15.0"
+num-traits = "0.2.19"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 socketioxide = { version = "0.17.2", features = ["extensions", "state"] }
@@ -19,4 +20,4 @@ tracing-subscriber = "0.3.19"
 [dependencies.sqlx]
 version = "0.8.6"
 default-features = false
-features = ["macros", "postgres", "runtime-tokio"]
+features = ["macros", "postgres", "runtime-tokio", "bigdecimal"]

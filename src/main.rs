@@ -3,14 +3,16 @@ use std::env;
 use std::sync::{Arc, Mutex};
 
 use bcrypt::verify;
+use bigdecimal::num_bigint::BigInt;
 use dotenv::dotenv;
+use num_traits::cast::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use socketioxide::{
     extract::{Data, SocketRef, State},
     SocketIo,
 };
 use sqlx::postgres::PgPoolOptions;
-use sqlx::Row;
+use sqlx::types::BigDecimal;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::info;
@@ -20,7 +22,7 @@ use tracing_subscriber::FmtSubscriber;
 struct SharedState {
     db: sqlx::PgPool,
     users: Arc<Mutex<HashSet<String>>>,
-    batch_size: i32,
+    batch_size: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ struct MessageEvent {
     f: String,
     m: String,
     id: i32,
-    time: i64,
+    time: BigDecimal,
 }
 
 #[derive(Serialize)]
@@ -83,12 +85,19 @@ struct ForceLoginEvent {
     message: String,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct Message {
+    username: String,
+    message: String,
+    sent_at: Option<BigDecimal>,
+    id: i32,
+}
+
 async fn on_login(
     s: SocketRef,
     Data(data): Data<LoginData>,
     State(state): State<Arc<SharedState>>,
 ) {
-    // nick is String so the type can be held across await
     let nick = data.nick.trim();
     let password = data.password.trim();
 
@@ -143,22 +152,35 @@ async fn on_login(
 
                 let view_history: bool = row.view_history;
                 if view_history {
-                    if let Ok(rows) = sqlx::query("SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1")
-                        .bind(state.batch_size)
-                        .fetch_all(&state.db)
-                        .await
+                    if let Ok(rows) = sqlx::query!(
+                        "SELECT username, message, sent_at, id 
+                        FROM messages 
+                        ORDER BY id 
+                        DESC LIMIT $1",
+                        state.batch_size
+                    )
+                    .fetch_all(&state.db)
+                    .await
                     {
-                        let msgs: Vec<MessageEvent> = rows.into_iter().filter_map(|row| {
-                            let message: String = row.get("message");
-                            serde_json::from_str(&message).ok().map(|m| MessageEvent {
-                                f: row.get("username"),
-                                m,
-                                id: row.get("id"),
-                                time: (row.get::<f64, _>("sent_at") * 1000.0) as i64,
+                        let msgs: Vec<MessageEvent> = rows
+                            .into_iter()
+                            .filter_map(|row| {
+                                serde_json::from_str(&row.message)
+                                    .ok()
+                                    .map(|m| MessageEvent {
+                                        f: row.username,
+                                        m,
+                                        id: row.id,
+                                        time: (row.sent_at.unwrap_or(BigDecimal::from(0))
+                                            * BigDecimal::from(1000))
+                                        .to_i64()
+                                        .unwrap_or(0),
+                                    })
                             })
-                        }).collect();
+                            .collect();
 
-                        s.emit("previous-msg", &PreviousMsgEvent { msgs: &msgs }).ok();
+                        s.emit("previous-msg", &PreviousMsgEvent { msgs: &msgs })
+                            .ok();
                     }
                 }
             }
@@ -193,22 +215,28 @@ async fn on_send_msg(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
-        if let Ok(row) = sqlx::query(
-            "INSERT INTO messages (username, message) VALUES ($1, $2) RETURNING id, sent_at",
+        let message_json = serde_json::to_string(&data.m).unwrap_or_default();
+
+        if let Ok(row) = sqlx::query!(
+            "INSERT INTO messages (username, message) 
+            VALUES ($1, $2) 
+            RETURNING id, sent_at",
+            nick,
+            message_json
         )
-        .bind(&nick)
-        .bind(&data.m)
         .fetch_one(&state.db)
         .await
         {
             let msg = MessageEvent {
                 f: nick,
                 m: data.m.to_string(),
-                id: row.get("id"),
-                time: (row.get::<i64, _>("sent_at") * 1000),
+                id: row.id,
+                time: (row.sent_at.unwrap_or(BigDecimal::from(0)) * BigDecimal::from(1000))
+                    .to_i64()
+                    .unwrap_or(0),
             };
 
-            s.within("main").emit("new-msg", &msg).await.ok();
+            s.to("main").emit("new-msg", &msg).await.ok();
         }
     } else {
         s.emit(
@@ -244,33 +272,54 @@ async fn on_load_more_messages(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(_)) = s.extensions.get::<Username>() {
-        let query = if let Some(last) = data.last {
-            sqlx::query("SELECT username, message, sent_at, id FROM messages WHERE id < $1 ORDER BY id DESC LIMIT $2")
-                .bind(last)
-                .bind(state.batch_size)
-        } else {
-            sqlx::query(
-                "SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1",
+        let rows = if let Some(last) = data.last {
+            sqlx::query_as!(
+                Message,
+                "SELECT username, message, sent_at, id 
+                FROM messages WHERE id < $1 
+                ORDER BY id 
+                DESC LIMIT $2",
+                last,
+                state.batch_size
             )
-            .bind(state.batch_size)
+            .fetch_all(&state.db)
+            .await
+        } else {
+            sqlx::query_as!(
+                Message,
+                "SELECT username, message, sent_at, id 
+                FROM messages 
+                ORDER BY id 
+                DESC LIMIT $1",
+                state.batch_size
+            )
+            .fetch_all(&state.db)
+            .await
         };
 
-        if let Ok(rows) = query.fetch_all(&state.db).await {
-            let msgs: Vec<MessageEvent> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let message: String = row.get("message");
-                    serde_json::from_str(&message).ok().map(|m| MessageEvent {
-                        f: row.get("username"),
-                        m,
-                        id: row.get("id"),
-                        time: (row.get::<f64, _>("sent_at") * 1000.0) as i64,
-                    })
-                })
-                .collect();
-
-            s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
+        if rows.is_err() {
+            eprintln!("Database error: {}", rows.unwrap_err());
+            return;
         }
+
+        let msgs: Vec<MessageEvent> = rows
+            .unwrap()
+            .into_iter()
+            .filter_map(|row| {
+                serde_json::from_str(&row.message)
+                    .ok()
+                    .map(|m| MessageEvent {
+                        f: row.username,
+                        m,
+                        id: row.id,
+                        time: (row.sent_at.unwrap_or(BigDecimal::from(0)) * BigDecimal::from(1000))
+                            .to_i64()
+                            .unwrap_or(0),
+                    })
+            })
+            .collect();
+
+        s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
     }
 }
 
@@ -302,7 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db = PgPoolOptions::new().connect(&db_url).await?;
 
-    let batch_size: i32 = match env::var("BATCH_SIZE") {
+    let batch_size: i64 = match env::var("BATCH_SIZE") {
         Ok(val) => val.parse().unwrap_or(50),
         Err(_) => 50,
     };
