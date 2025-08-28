@@ -10,7 +10,6 @@ use socketioxide::{
     SocketIo,
 };
 use sqlx::postgres::PgPoolOptions;
-use sqlx::Row;
 use sqlx::types::BigDecimal;
 use num_traits::cast::ToPrimitive;
 use tower::ServiceBuilder;
@@ -22,7 +21,7 @@ use tracing_subscriber::FmtSubscriber;
 struct SharedState {
     db: sqlx::PgPool,
     users: Arc<Mutex<HashSet<String>>>,
-    batch_size: i32,
+    batch_size: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -79,11 +78,20 @@ struct ForceLoginEvent {
     message: String,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct Message {
+    username: String,
+    message: String,
+    sent_at: Option<BigDecimal>,
+    id: i32,
+}
+
 async fn on_login(
     s: SocketRef,
     Data(data): Data<LoginData>,
     State(state): State<Arc<SharedState>>,
 ) {
+    println!("on_login received");
     let nick = data.nick.trim().to_string();
     let password = data.password.trim().to_string();
 
@@ -134,7 +142,7 @@ async fn on_login(
                         FROM messages 
                         ORDER BY id 
                         DESC LIMIT $1",
-                        state.batch_size as i64
+                        state.batch_size 
                     )
                         .fetch_all(&state.db)
                         .await
@@ -192,25 +200,33 @@ async fn on_send_msg(
     Data(data): Data<SendMsgData>,
     State(state): State<Arc<SharedState>>,
 ) {
+    println!("on_send_msg received");
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
+        println!("e");
         let message_json = serde_json::to_string(&data.m).unwrap_or_default();
 
-        if let Ok(row) = sqlx::query(
-            "INSERT INTO messages (username, message) VALUES ($1, $2) RETURNING id, sent_at",
+        println!("e");
+
+        if let Ok(row) = sqlx::query!(
+            "INSERT INTO messages (username, message) 
+            VALUES ($1, $2) 
+            RETURNING id, sent_at",
+            nick,
+            message_json
         )
-        .bind(&nick)
-        .bind(&message_json)
         .fetch_one(&state.db)
         .await
         {
             let msg = MessageEvent {
                 f: nick.clone(),
                 m: serde_json::Value::String(data.m),
-                id: row.get("id"),
-                time: (row.get::<f64, _>("sent_at") * 1000.0) as i64,
+                id: row.id,
+                time: (row.sent_at.unwrap_or(BigDecimal::from(0)) 
+                    * BigDecimal::from(1000)).to_i64().unwrap_or(0),
             };
 
-            s.within("main").emit("new-msg", &msg).await.ok();
+            s.to("main").emit("new-msg", &msg).await.ok();
+            println!("New msg");
         }
     } else {
         s.emit(
@@ -246,33 +262,47 @@ async fn on_load_more_messages(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(_)) = s.extensions.get::<Username>() {
-        let query = if let Some(last) = data.last {
-            sqlx::query("SELECT username, message, sent_at, id FROM messages WHERE id < $1 ORDER BY id DESC LIMIT $2")
-                .bind(last)
-                .bind(state.batch_size)
+        let rows = if let Some(last) = data.last {
+            sqlx::query_as!(
+                Message,
+                "SELECT username, message, sent_at, id 
+                FROM messages WHERE id < $1 
+                ORDER BY id 
+                DESC LIMIT $2", 
+                last,
+                state.batch_size
+            ).fetch_all(&state.db).await
         } else {
-            sqlx::query(
-                "SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1",
-            )
-            .bind(state.batch_size)
+            sqlx::query_as!(
+                Message,
+                "SELECT username, message, sent_at, id 
+                FROM messages 
+                ORDER BY id 
+                DESC LIMIT $1",
+                state.batch_size
+            ).fetch_all(&state.db).await
         };
 
-        if let Ok(rows) = query.fetch_all(&state.db).await {
-            let msgs: Vec<MessageEvent> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let message: String = row.get("message");
-                    serde_json::from_str(&message).ok().map(|m| MessageEvent {
-                        f: row.get("username"),
-                        m,
-                        id: row.get("id"),
-                        time: (row.get::<f64, _>("sent_at") * 1000.0) as i64,
-                    })
+        if rows.is_err() {
+            eprintln!("Database error: {}", rows.unwrap_err());
+            return;
+        }
+
+        let msgs: Vec<MessageEvent> = rows
+            .unwrap()
+            .into_iter()
+            .filter_map(|row| {
+                serde_json::from_str(&row.message).ok().map(|m| MessageEvent {
+                    f: row.username,
+                    m,
+                    id: row.id,
+                    time: (row.sent_at.unwrap_or(BigDecimal::from(0)) 
+                        * BigDecimal::from(1000)).to_i64().unwrap_or(0),
                 })
-                .collect();
+            })
+            .collect();
 
             s.emit("older-msgs", &PreviousMsgEvent { msgs }).ok();
-        }
     }
 }
 
@@ -296,7 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db = PgPoolOptions::new().connect(&db_url).await?;
 
-    let batch_size: i32 = match env::var("BATCH_SIZE") {
+    let batch_size: i64 = match env::var("BATCH_SIZE") {
         Ok(val) => val.parse().unwrap_or(50),
         Err(_) => 50,
     };
