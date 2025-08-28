@@ -1,0 +1,4 @@
+ALTER TABLE users
+    ALTER COLUMN created SET NOT NULL;
+ALTER TABLE messages
+    ALTER COLUMN sent_at SET NOT NULL;

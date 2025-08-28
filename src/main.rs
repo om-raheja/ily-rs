@@ -1,18 +1,16 @@
 use std::collections::HashSet;
 use std::env;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use bcrypt::verify;
-use bigdecimal::num_bigint::BigInt;
 use dotenv::dotenv;
-use num_traits::cast::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use socketioxide::{
     extract::{Data, SocketRef, State},
     SocketIo,
 };
 use sqlx::postgres::PgPoolOptions;
-use sqlx::types::BigDecimal;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::info;
@@ -36,7 +34,8 @@ struct LoginData {
 
 #[derive(Deserialize)]
 struct SendMsgData {
-    m: String,
+    #[serde(rename = "m")]
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -62,12 +61,34 @@ struct UserEvent<'a> {
     nick: &'a str,
 }
 
-#[derive(Serialize)]
+#[derive(Debug)]
+struct OffsetDateTime(sqlx::types::time::OffsetDateTime);
+
+impl Deref for OffsetDateTime {
+    type Target = sqlx::types::time::OffsetDateTime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<sqlx::types::time::PrimitiveDateTime> for OffsetDateTime {
+    fn from(value: sqlx::types::time::PrimitiveDateTime) -> Self {
+        Self(value.assume_utc())
+    }
+}
+
+#[derive(Serialize, Debug, sqlx::FromRow)]
 struct MessageEvent {
-    f: String,
-    m: String,
+    #[serde(rename = "f")]
+    username: String,
+    #[serde(rename = "m")]
+    message: String,
     id: i32,
-    time: BigDecimal,
+
+    #[serde(with = "time::serde::timestamp::milliseconds")]
+    #[serde(rename = "time")]
+    sent_at: OffsetDateTime,
 }
 
 #[derive(Serialize)]
@@ -83,14 +104,6 @@ struct ForceLoginEvent {
     #[serde(rename = "type")]
     error_type: String,
     message: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct Message {
-    username: String,
-    message: String,
-    sent_at: Option<BigDecimal>,
-    id: i32,
 }
 
 async fn on_login(
@@ -152,33 +165,12 @@ async fn on_login(
 
                 let view_history: bool = row.view_history;
                 if view_history {
-                    if let Ok(rows) = sqlx::query!(
-                        "SELECT username, message, sent_at, id 
-                        FROM messages 
-                        ORDER BY id 
-                        DESC LIMIT $1",
-                        state.batch_size
-                    )
-                    .fetch_all(&state.db)
-                    .await
-                    {
-                        let msgs: Vec<MessageEvent> = rows
-                            .into_iter()
-                            .filter_map(|row| {
-                                serde_json::from_str(&row.message)
-                                    .ok()
-                                    .map(|m| MessageEvent {
-                                        f: row.username,
-                                        m,
-                                        id: row.id,
-                                        time: (row.sent_at.unwrap_or(BigDecimal::from(0))
-                                            * BigDecimal::from(1000))
-                                        .to_i64()
-                                        .unwrap_or(0),
-                                    })
-                            })
-                            .collect();
+                    let rows_query= sqlx::query_as!(
+                    MessageEvent,
+                        "SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1", state.batch_size
+                    ).fetch_all(&state.db).await;
 
+                    if let Ok(msgs) = rows_query {
                         s.emit("previous-msg", &PreviousMsgEvent { msgs: &msgs })
                             .ok();
                     }
@@ -215,7 +207,7 @@ async fn on_send_msg(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
-        let message_json = serde_json::to_string(&data.m).unwrap_or_default();
+        let message_json = serde_json::to_string(&data.message).unwrap_or_default();
 
         if let Ok(row) = sqlx::query!(
             "INSERT INTO messages (username, message) 
@@ -228,12 +220,10 @@ async fn on_send_msg(
         .await
         {
             let msg = MessageEvent {
-                f: nick,
-                m: data.m.to_string(),
+                username: nick,
+                message: data.message.to_string(),
                 id: row.id,
-                time: (row.sent_at.unwrap_or(BigDecimal::from(0)) * BigDecimal::from(1000))
-                    .to_i64()
-                    .unwrap_or(0),
+                sent_at: row.sent_at.into(),
             };
 
             s.to("main").emit("new-msg", &msg).await.ok();
@@ -272,12 +262,12 @@ async fn on_load_more_messages(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(_)) = s.extensions.get::<Username>() {
-        let rows = if let Some(last) = data.last {
+        let rows_query = if let Some(last) = data.last {
             sqlx::query_as!(
-                Message,
+                MessageEvent,
                 "SELECT username, message, sent_at, id 
                 FROM messages WHERE id < $1 
-                ORDER BY id 
+                ORDER BY sent_at
                 DESC LIMIT $2",
                 last,
                 state.batch_size
@@ -286,10 +276,10 @@ async fn on_load_more_messages(
             .await
         } else {
             sqlx::query_as!(
-                Message,
+                MessageEvent,
                 "SELECT username, message, sent_at, id 
                 FROM messages 
-                ORDER BY id 
+                ORDER BY sent_at
                 DESC LIMIT $1",
                 state.batch_size
             )
@@ -297,29 +287,12 @@ async fn on_load_more_messages(
             .await
         };
 
-        if rows.is_err() {
-            eprintln!("Database error: {}", rows.unwrap_err());
+        if let Ok(msgs) = rows_query {
+            s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
+        } else {
+            eprintln!("Database error: {}", rows_query.unwrap_err());
             return;
         }
-
-        let msgs: Vec<MessageEvent> = rows
-            .unwrap()
-            .into_iter()
-            .filter_map(|row| {
-                serde_json::from_str(&row.message)
-                    .ok()
-                    .map(|m| MessageEvent {
-                        f: row.username,
-                        m,
-                        id: row.id,
-                        time: (row.sent_at.unwrap_or(BigDecimal::from(0)) * BigDecimal::from(1000))
-                            .to_i64()
-                            .unwrap_or(0),
-                    })
-            })
-            .collect();
-
-        s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
     }
 }
 
