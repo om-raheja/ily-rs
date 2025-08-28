@@ -27,14 +27,14 @@ struct SharedState {
 struct Username(String);
 
 #[derive(Deserialize, Serialize)]
-struct LoginData<'a> {
-    nick: &'a str,
-    password: &'a str,
+struct LoginData {
+    nick: String,
+    password: String,
 }
 
 #[derive(Deserialize)]
-struct SendMsgData<'a> {
-    m: &'a str,
+struct SendMsgData {
+    m: String,
 }
 
 #[derive(Deserialize)]
@@ -61,9 +61,9 @@ struct UserEvent<'a> {
 }
 
 #[derive(Serialize)]
-struct MessageEvent<'a> {
-    f: &'a str,
-    m: serde_json::Value,
+struct MessageEvent {
+    f: String,
+    m: String,
     id: i32,
     time: i64,
 }
@@ -71,7 +71,7 @@ struct MessageEvent<'a> {
 #[derive(Serialize)]
 struct PreviousMsgEvent<'a, T>
 where
-    T: IntoIterator<Item = MessageEvent<'a>>,
+    T: IntoIterator<Item = MessageEvent>,
 {
     msgs: &'a T,
 }
@@ -83,11 +83,12 @@ struct ForceLoginEvent {
     message: String,
 }
 
-async fn on_login<'a>(
+async fn on_login(
     s: SocketRef,
-    Data(data): Data<LoginData<'a>>,
+    Data(data): Data<LoginData>,
     State(state): State<Arc<SharedState>>,
 ) {
+    // nick is String so the type can be held across await
     let nick = data.nick.trim();
     let password = data.password.trim();
 
@@ -113,21 +114,31 @@ async fn on_login<'a>(
         Ok(Some(row)) => {
             let password_hash: String = row.password_hash;
 
-            if verify(&password, &password_hash).unwrap_or(false) {
+            if !verify(password, &password_hash).unwrap_or(false) {
+                s.emit(
+                    "force-login",
+                    &ForceLoginEvent {
+                        error_type: "login".to_string(),
+                        message: "Invalid credentials.".to_string(),
+                    },
+                )
+                .ok();
+            } else {
+                let mut is_new = false;
                 if let Ok(mut users) = state.users.lock() {
-                    let is_new = users.insert(nick.to_string());
+                    is_new = users.insert(nick.to_string());
 
                     s.extensions.insert(Username(nick.to_string()));
                     s.join("main");
 
                     s.emit("start", &StartEvent { users: &*users }).ok();
+                }
 
-                    if is_new {
-                        s.to("main")
-                            .emit("ue", &UserEvent { nick: nick.clone() })
-                            .await
-                            .ok();
-                    }
+                if is_new {
+                    s.to("main")
+                        .emit("ue", &UserEvent { nick: nick })
+                        .await
+                        .ok();
                 }
 
                 let view_history: bool = row.view_history;
@@ -147,18 +158,9 @@ async fn on_login<'a>(
                             })
                         }).collect();
 
-                        s.emit("previous-msg", &PreviousMsgEvent { msgs }).ok();
+                        s.emit("previous-msg", &PreviousMsgEvent { msgs: &msgs }).ok();
                     }
                 }
-            } else {
-                s.emit(
-                    "force-login",
-                    &ForceLoginEvent {
-                        error_type: "login".to_string(),
-                        message: "Invalid credentials.".to_string(),
-                    },
-                )
-                .ok();
             }
         }
         Ok(None) => {
@@ -191,21 +193,19 @@ async fn on_send_msg(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
-        let message_json = serde_json::to_string(&data.m).unwrap_or_default();
-
         if let Ok(row) = sqlx::query(
             "INSERT INTO messages (username, message) VALUES ($1, $2) RETURNING id, sent_at",
         )
         .bind(&nick)
-        .bind(&message_json)
+        .bind(&data.m)
         .fetch_one(&state.db)
         .await
         {
             let msg = MessageEvent {
-                f: nick.clone(),
-                m: serde_json::Value::String(data.m),
+                f: nick,
+                m: data.m.to_string(),
                 id: row.get("id"),
-                time: (row.get::<f64, _>("sent_at") * 1000.0) as i64,
+                time: (row.get::<i64, _>("sent_at") * 1000),
             };
 
             s.within("main").emit("new-msg", &msg).await.ok();
@@ -269,7 +269,7 @@ async fn on_load_more_messages(
                 })
                 .collect();
 
-            s.emit("older-msgs", &PreviousMsgEvent { msgs }).ok();
+            s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
         }
     }
 }
@@ -280,7 +280,15 @@ async fn on_disconnect(s: SocketRef, State(state): State<Arc<SharedState>>) {
             users.remove(&nick);
         }
 
-        s.to("main").emit("ul", &UserEvent { nick }).await.ok();
+        s.to("main")
+            .emit(
+                "ul",
+                &UserEvent {
+                    nick: nick.as_ref(),
+                },
+            )
+            .await
+            .ok();
     }
 }
 
@@ -324,9 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(layer),
         );
 
-    let port = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "8090".to_string());
+    let port = std::env::args().nth(1).unwrap_or("8090".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
 
     info!("Starting server on port {}", port);
