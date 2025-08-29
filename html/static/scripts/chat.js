@@ -165,11 +165,6 @@ var Chat = {
 		}
 	},
 
-	send_msg: function(text){
-		Chat.socket.emit("send-msg", {
-			m: text
-		});
-	},
 
 	send_event: function(){
 		var value = Chat.textarea.value.trim();
@@ -177,7 +172,7 @@ var Chat = {
 
 		console.log("Send message.");
 
-		Chat.send_msg({text: value});
+		Chat.socket.emit("send-msg", {text: value});
 
 		Chat.textarea.value = '';
 		Chat.typing.update();
@@ -747,9 +742,9 @@ var Chat = {
 				var reader = new FileReader();
 				reader.onload = (function(file){
 					return function(e){
-						Chat.send_msg({
+						Chat.socket.emit("send-msg", {
 							type: file.type,
-							name: file.name,
+							text: file.name,
 							url: e.target.result
 						});
 					};
