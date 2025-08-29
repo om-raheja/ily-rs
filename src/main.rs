@@ -318,7 +318,9 @@ async fn on_disconnect(s: SocketRef, State(state): State<Arc<SharedState>>) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    let subscriber = FmtSubscriber::new();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");

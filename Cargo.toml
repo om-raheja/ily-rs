@@ -2,6 +2,7 @@
 name = "ily-rs"
 version = "0.1.0"
 edition = "2021"
+default-run = "ily-rs"
 
 [dependencies]
 axum = "0.8.4"
@@ -10,7 +11,7 @@ dotenv = "0.15.0"
 num-traits = "0.2.19"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
-socketioxide = { version = "0.17.2", features = ["extensions", "state"] }
+socketioxide = { version = "0.17.2", features = ["extensions", "state", "tracing"] }
 time = { version = "^0.3", features = ["serde"]}
 tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros"] }
 tower = "0.5.2"

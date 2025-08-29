@@ -41,7 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let password_hash = hash(&password, bcrypt_cost)?;
+    println!("{:?}: {}", password.trim(), password.len());
+    let password_hash = hash(password.trim(), bcrypt_cost)?;
+    println!("{}", password_hash);
     sqlx::query!(
         "INSERT INTO users (username, password_hash, view_history) VALUES ($1, $2, $3)",
         username,
