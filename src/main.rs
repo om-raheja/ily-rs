@@ -188,7 +188,7 @@ async fn on_login(
             .ok();
         }
         Err(e) => {
-            eprintln!("Database error: {}", e);
+            tracing::error!("Database error: {}", e);
             s.emit(
                 "force-login",
                 &ForceLoginEvent {
@@ -290,7 +290,7 @@ async fn on_load_more_messages(
         if let Ok(msgs) = rows_query {
             s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
         } else {
-            eprintln!("Database error: {}", rows_query.unwrap_err());
+            tracing::error!("Database error: {}", rows_query.unwrap_err());
             return;
         }
     }

@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", password_hash);
     sqlx::query!(
         "INSERT INTO users (username, password_hash, view_history) VALUES ($1, $2, $3)",
-        username,
+        username.trim(),
         password_hash,
         view_history
     )
