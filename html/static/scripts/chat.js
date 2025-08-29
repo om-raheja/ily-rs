@@ -725,6 +725,7 @@ var Chat = {
 		});
 
 		// Get file data on drop
+        /*
 		dropZone.addEventListener('drop', function(e){
 			e.stopPropagation();
 			e.preventDefault();
@@ -752,6 +753,7 @@ var Chat = {
 				reader.readAsDataURL(file);
 			}
 		});
+        */
 
 		// close socket upon refresh or tab close, free the username
 		window.addEventListener("beforeunload", () => {
