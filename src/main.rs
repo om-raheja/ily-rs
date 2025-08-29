@@ -114,12 +114,12 @@ async fn on_login(
     let nick = data.nick.trim();
     let password = data.password.trim();
 
-    if nick.is_empty() {
+    if nick.is_empty() || password.is_empty() {
         s.emit(
             "force-login",
             &ForceLoginEvent {
                 error_type: "login".to_string(),
-                message: "Nick can't be empty.".to_string(),
+                message: "Nick or password can't be empty.".to_string(),
             },
         )
         .ok();
@@ -165,7 +165,7 @@ async fn on_login(
 
                 let view_history: bool = row.view_history;
                 if view_history {
-                    let rows_query= sqlx::query_as!(
+                    let rows_query = sqlx::query_as!(
                     MessageEvent,
                         "SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1", state.batch_size
                     ).fetch_all(&state.db).await;
@@ -318,7 +318,9 @@ async fn on_disconnect(s: SocketRef, State(state): State<Arc<SharedState>>) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    let subscriber = FmtSubscriber::new();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
