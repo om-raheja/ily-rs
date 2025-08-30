@@ -34,13 +34,7 @@ struct LoginData {
 
 #[derive(Deserialize)]
 struct SendMsgData {
-    #[serde(rename = "m")]
-    message: String,
-}
-
-#[derive(Deserialize)]
-struct TypingData {
-    status: bool,
+    text: String,
 }
 
 #[derive(Deserialize)]
@@ -99,12 +93,6 @@ where
     msgs: &'a T,
 }
 
-#[derive(Serialize)]
-struct ForceLoginEvent {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
-}
 
 async fn on_login(
     s: SocketRef,
@@ -117,10 +105,7 @@ async fn on_login(
     if nick.is_empty() || password.is_empty() {
         s.emit(
             "force-login",
-            &ForceLoginEvent {
-                error_type: "login".to_string(),
-                message: "Nick or password can't be empty.".to_string(),
-            },
+             "Nick or password can't be empty.",
         )
         .ok();
         return;
@@ -139,10 +124,7 @@ async fn on_login(
             if !verify(password, &password_hash).unwrap_or(false) {
                 s.emit(
                     "force-login",
-                    &ForceLoginEvent {
-                        error_type: "login".to_string(),
-                        message: "Invalid credentials.".to_string(),
-                    },
+                     "Invalid credentials.",
                 )
                 .ok();
             } else {
@@ -166,12 +148,16 @@ async fn on_login(
                 let view_history: bool = row.view_history;
                 if view_history {
                     let rows_query = sqlx::query_as!(
-                    MessageEvent,
-                        "SELECT username, message, sent_at, id FROM messages ORDER BY id DESC LIMIT $1", state.batch_size
+                        MessageEvent,
+                        "SELECT username, message, sent_at, id 
+                        FROM messages 
+                        ORDER BY id 
+                        DESC LIMIT $1", state.batch_size
                     ).fetch_all(&state.db).await;
 
                     if let Ok(msgs) = rows_query {
-                        s.emit("previous-msg", &PreviousMsgEvent { msgs: &msgs })
+                        s.emit("previous-msg", 
+                            &PreviousMsgEvent { msgs: &msgs })
                             .ok();
                     }
                 }
@@ -180,10 +166,7 @@ async fn on_login(
         Ok(None) => {
             s.emit(
                 "force-login",
-                &ForceLoginEvent {
-                    error_type: "login".to_string(),
-                    message: "Invalid credentials.".to_string(),
-                },
+                "Invalid credentials.",
             )
             .ok();
         }
@@ -191,10 +174,7 @@ async fn on_login(
             tracing::error!("Database error: {}", e);
             s.emit(
                 "force-login",
-                &ForceLoginEvent {
-                    error_type: "login".to_string(),
-                    message: "Server error during authentication.".to_string(),
-                },
+                 "Server error during authentication.",
             )
             .ok();
         }
@@ -207,47 +187,71 @@ async fn on_send_msg(
     State(state): State<Arc<SharedState>>,
 ) {
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
-        let message_json = serde_json::to_string(&data.message).unwrap_or_default();
 
         if let Ok(row) = sqlx::query!(
             "INSERT INTO messages (username, message) 
             VALUES ($1, $2) 
             RETURNING id, sent_at",
             nick,
-            message_json
+            data.text,
         )
         .fetch_one(&state.db)
         .await
         {
             let msg = MessageEvent {
-                username: nick,
-                message: data.message.to_string(),
+                username: nick.clone(),
+                message: data.text.to_string(),
                 id: row.id,
                 sent_at: row.sent_at.into(),
             };
 
+            println!("broadcasting the message");
+
             s.to("main").emit("new-msg", &msg).await.ok();
+
+            s.to("main")
+                .emit(
+                    "new-msg",
+                    &serde_json::json!({
+                        "f": nick,
+                        "m": data.text, 
+                        "time": row.sent_at.assume_utc().unix_timestamp() * 1000 
+                            + row.sent_at.assume_utc().millisecond() as i64,
+                        "id": row.id
+                    }),
+                )
+                .await
+                .ok();
+
+            s.emit(
+                    "new-msg",
+                    &serde_json::json!({
+                        "f": nick,
+                        "m": data.text, 
+                        "time": row.sent_at.assume_utc().unix_timestamp() * 1000 
+                            + row.sent_at.assume_utc().millisecond() as i64,
+                        "id": row.id
+                    }),
+                )
+                .ok();
         }
     } else {
         s.emit(
             "force-login",
-            &ForceLoginEvent {
-                error_type: "auth".to_string(),
-                message: "You need to be logged in to send messages.".to_string(),
-            },
+             "You need to be logged in to send messages.",
         )
         .ok();
     }
 }
 
-async fn on_typing(s: SocketRef, Data(data): Data<TypingData>) {
+async fn on_typing(s: SocketRef, Data(data): Data<bool>) {
     if let Some(Username(nick)) = s.extensions.get::<Username>() {
         s.broadcast()
             .to("main")
             .emit(
                 "typing",
                 &serde_json::json!({
-                    "status": data.status,
+                    "status": data,
                     "nick": nick
                 }),
             )

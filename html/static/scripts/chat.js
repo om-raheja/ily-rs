@@ -254,6 +254,7 @@ var Chat = {
     },
 
     new_msg: function(r, notif=true){
+        console.log("New message received");
         const fromSelf = my_nick == r.f;
 
         var li = document.createElement('div');
@@ -299,7 +300,7 @@ var Chat = {
 
         var body = document.createElement('span');
         body.className = 'body' + (fromSelf ? ' out' : ' in');
-        Chat.append_msg(body, r.m);
+        Chat.append_msg(body, r);
 
         msg.appendChild(body);
         li.appendChild(msg);
@@ -355,7 +356,7 @@ var Chat = {
 
         var body = document.createElement('span');
         body.className = 'body' + (fromSelf ? ' out' : ' in');
-        Chat.append_msg(body, r.m);
+        Chat.append_msg(body, r);
 
         msg.appendChild(body);
         li.appendChild(msg);
@@ -390,12 +391,14 @@ var Chat = {
     },
 
 	append_msg: function(el, msg){
+        console.log("append_msg:", msg);
 		if(!msg) return;
 
+
 		// If is object
-		if(typeof msg.text !== 'undefined'){
+		if(typeof msg.m !== 'undefined'){
 			// Escape HTML
-			el.innerText = msg.text;
+			el.innerText = msg.m;
 			var text = el.innerHTML;
 
 			// Parse urls
@@ -428,6 +431,8 @@ var Chat = {
 			el.innerHTML = text;
 		}
 
+
+        // uh so this code is not gonna work lol 
 		if(typeof msg.type !== 'undefined'){
 			// Image
 			if(msg.type.match(/image.*/)){
@@ -459,6 +464,7 @@ var Chat = {
 			link.innerText = msg.name;
 			el.appendChild(link);
 		}
+
 	},
 
 	force_login: function(fail){
