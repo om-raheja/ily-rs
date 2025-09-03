@@ -43,6 +43,7 @@ jobs:
         key: ${{ secrets.SSH_KEY }}
         source: "html/*"
         target: ily-rs/html/
+        strip-components: 1
         
     - name: Copy files via SSH
       uses: appleboy/scp-action@v1
@@ -51,7 +52,8 @@ jobs:
         username: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_KEY }}
         source: "target/release/ily-rs"
-        target: ily-rs/ily-rs
+        target: ily-rs/
+        strip-components: 2
 
     - name: SSH Remote Commands
       uses: appleboy/ssh-action@v1.0.3
