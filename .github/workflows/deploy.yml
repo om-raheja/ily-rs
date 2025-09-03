@@ -23,7 +23,6 @@ jobs:
         sqlx database create
         sqlx migrate run
         cargo build --release 
-        |
 
     - name: SSH-SCP-SSH Pipeline
       uses: kangketikonlen/ssh-pipeline@v0.0.3
@@ -36,14 +35,11 @@ jobs:
         first_ssh: |
           mkdir -p $HOME/ily-rs/html
           systemctl --user stop ily-rs
-          |
         # Multiline block of files to copy. Format: 'local/path => remote/path'
         scp: |
           html/* => ily-rs/html/
           target/release/ily-rs => ily-rs/ily-rs
-          |
         # Multiline block of commands to run after the SCP transfer.
         last_ssh: |
           systemctl --user start ily-rs
-          |
     
