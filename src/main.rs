@@ -391,6 +391,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
     if let Some(socket_path) = unix_socket {
+        // delete the file before binding
+        tokio::fs::remove_file(&socket_path).await.ok();
         let listener = UnixListener::bind(&socket_path).unwrap();
 
         info!("Starting server on Unix socket: {}", socket_path);
