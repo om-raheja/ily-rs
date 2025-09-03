@@ -17,7 +17,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --release --verbose
+      run: |
+        cargo add sqlx-cli
+        sqlx database create
+        sqlx migrate run
+        cargo build --release 
+        |
 
     - name: SSH-SCP-SSH Pipeline
       uses: kangketikonlen/ssh-pipeline@v0.0.3
