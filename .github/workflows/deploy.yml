@@ -24,22 +24,42 @@ jobs:
         sqlx migrate run
         cargo build --release 
 
-    - name: ssh-scp-ssh-pipelines
-      uses: cross-the-world/ssh-scp-ssh-pipelines@v1.1.4
+    - name: SSH Remote Commands
+      uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SSH_HOST }}
         user: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_KEY }}
-        known_hosts: ${{ secrets.SSH_KNOWNHOSTS }}
-        connect_timeout: 5m 
-        first_ssh: |
+        timeout: 5m 
+        script: |
           mkdir -p $HOME/ily-rs/html
           systemctl --user stop ily-rs
-        # Multiline block of files to copy. Format: 'local/path => remote/path'
-        scp: |
-          html/* => ily-rs/html/
-          target/release/ily-rs => ily-rs/ily-rs
-        # Multiline block of commands to run after the SCP transfer.
-        last_ssh: |
+
+    - name: Copy files via SSH
+      uses: appleboy/scp-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        source: "html/*"
+        target: ily-rs/html/
+        
+    - name: Copy files via SSH
+      uses: appleboy/scp-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        source: "target/release/ily-rs"
+        target: ily-rs/ily-rs
+
+    - name: SSH Remote Commands
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        user: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        timeout: 5m 
+        script: |
           systemctl --user start ily-rs
     
