@@ -24,8 +24,8 @@ jobs:
         sqlx migrate run
         cargo build --release 
 
-    - name: SSH-SCP-SSH Pipeline
-      uses: kangketikonlen/ssh-pipeline@v0.0.3
+    - name: ssh-scp-ssh-pipelines
+      uses: cross-the-world/ssh-scp-ssh-pipelines@v1.1.4
       with:
         host: ${{ secrets.SSH_HOST }}
         user: ${{ secrets.SSH_USER }}
