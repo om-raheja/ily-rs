@@ -254,6 +254,8 @@ var Chat = {
     },
 
     new_msg: function(r, notif=true){
+        if (typeof r === 'string') r = JSON.parse(r);
+
         console.log("New message received");
         const fromSelf = my_nick == r.f;
 
@@ -508,14 +510,21 @@ var Chat = {
             console.log("msgs:");
 			console.log(data);
 
-            if (data.msgs.length === 0) {
+            // print the type of data
+            console.log(typeof data);
+            if (typeof data === 'string') {
+                data = JSON.parse(data);
+                console.log(typeof data);
+            }
+
+            if (data.length === 0) {
                 return;    
             }
-            Chat.earliest_message_id = data.msgs[data.msgs.length - 1].id;
+            Chat.earliest_message_id = data[data.length - 1].id;
             console.log("earliest_message_id: " + Chat.earliest_message_id);
 
             // backend sends in descending order
-			data.msgs.reverse().forEach(element => {
+			data.reverse().forEach(element => {
 				Chat.new_msg(element, false);
 			});
 		},
@@ -591,12 +600,16 @@ var Chat = {
 
     // receive older messages
     older_messages: function(data) {
-        console.log("received %s older messages to render", data.msgs.length);
+        if (typeof data === 'string') {
+            data = JSON.parse(data);
+        }
+
+        console.log("received %s older messages to render", data.length);
         const loader = document.querySelector('.loading-older');
         
         Chat.is_loading = false;
 
-        if(data.msgs.length > 0) {
+        if(data.length > 0) {
             if(loader) loader.remove();
             const prevScrollHeight = Chat.chat_box.scrollHeight;
             const prevScrollTop = Chat.chat_box.scrollTop;
@@ -606,7 +619,7 @@ var Chat = {
             const fragment = document.createDocumentFragment();
             
             // Process messages in reverse order (oldest first)
-            data.msgs.reverse().forEach(msg => {
+            data.reverse().forEach(msg => {
                 const { element, currentData } = Chat.make_historical_msg_element(msg, previousData);
                 fragment.prepend(element);
                 previousData = currentData;
@@ -616,12 +629,12 @@ var Chat = {
             Chat.msgs_list.append(fragment);
 
             // Update earliest known message ID
-            Chat.earliest_message_id = data.msgs[0].id;
+            Chat.earliest_message_id = data[0].id;
 
             // Adjust scroll position
             const newScrollHeight = Chat.chat_box.scrollHeight;
             Chat.chat_box.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
-        } else if (data.msgs.length === 0) {
+        } else if (data.length === 0) {
             console.log("no older messages to render");
             loader.textContent = 'No older messages to render';
             Chat.at_top = true;

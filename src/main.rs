@@ -13,7 +13,7 @@ use socketioxide::{
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, services::ServeDir};
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Debug, Clone)]
@@ -85,15 +85,6 @@ struct MessageEvent {
     sent_at: OffsetDateTime,
 }
 
-#[derive(Serialize)]
-struct PreviousMsgEvent<'a, T>
-where
-    T: IntoIterator<Item = MessageEvent>,
-{
-    msgs: &'a T,
-}
-
-
 async fn on_login(
     s: SocketRef,
     Data(data): Data<LoginData>,
@@ -112,7 +103,7 @@ async fn on_login(
     }
 
     match sqlx::query!(
-        "SELECT username, password_hash, view_history FROM users WHERE username = $1",
+        "SELECT password_hash, view_history FROM users WHERE username = $1",
         nick
     )
     .fetch_optional(&state.db)
@@ -145,8 +136,8 @@ async fn on_login(
                         .ok();
                 }
 
-                let view_history: bool = row.view_history;
-                if view_history {
+                if row.view_history {
+                    println!("Viewing history");
                     let rows_query = sqlx::query_as!(
                         MessageEvent,
                         "SELECT username, message, sent_at, id 
@@ -156,9 +147,16 @@ async fn on_login(
                     ).fetch_all(&state.db).await;
 
                     if let Ok(msgs) = rows_query {
-                        s.emit("previous-msg", 
-                            &PreviousMsgEvent { msgs: &msgs })
-                            .ok();
+                        match serde_json::to_string(&msgs) {
+                            Ok(json_string) => {
+                                if let Err(err) = s.emit("previous-msg", &json_string) {
+                                    error!("Failed to send previous messages: {}", err);
+                                }
+                            }
+                            Err(err) => {
+                                error!("Failed to serialize previous messages: {}", err);
+                            }
+                        }
                     }
                 }
             }
@@ -171,7 +169,7 @@ async fn on_login(
             .ok();
         }
         Err(e) => {
-            tracing::error!("Database error: {}", e);
+            error!("Database error: {}", e);
             s.emit(
                 "force-login",
                  "Server error during authentication.",
@@ -207,33 +205,18 @@ async fn on_send_msg(
 
             println!("broadcasting the message");
 
-            s.to("main").emit("new-msg", &msg).await.ok();
-
-            s.to("main")
-                .emit(
-                    "new-msg",
-                    &serde_json::json!({
-                        "f": nick,
-                        "m": data.text, 
-                        "time": row.sent_at.assume_utc().unix_timestamp() * 1000 
-                            + row.sent_at.assume_utc().millisecond() as i64,
-                        "id": row.id
-                    }),
-                )
-                .await
-                .ok();
-
-            s.emit(
-                    "new-msg",
-                    &serde_json::json!({
-                        "f": nick,
-                        "m": data.text, 
-                        "time": row.sent_at.assume_utc().unix_timestamp() * 1000 
-                            + row.sent_at.assume_utc().millisecond() as i64,
-                        "id": row.id
-                    }),
-                )
-                .ok();
+            match serde_json::to_string(&msg) {
+                Ok(json_string) => {
+                    if let Err(err) = s.to("main").emit("new-msg", &json_string).await {
+                        error!("Failed to send message: {}", err);
+                        s.emit("force-login", "Failed to send message.").ok();
+                    } 
+                    s.emit("new-msg", &json_string).ok();
+                }
+                Err(err) => {
+                    error!("Failed to serialize previous messages: {}", err);
+                }
+            }
         }
     } else {
         s.emit(
@@ -265,7 +248,27 @@ async fn on_load_more_messages(
     Data(data): Data<LoadMoreMessagesData>,
     State(state): State<Arc<SharedState>>,
 ) {
-    if let Some(Username(_)) = s.extensions.get::<Username>() {
+    if let Some(Username(nick)) = s.extensions.get::<Username>() {
+        match sqlx::query!(
+            "SELECT view_history FROM users WHERE username = $1",
+            nick
+        )
+        .fetch_one(&state.db)
+        .await
+        {
+            Ok(row) => {
+                if !row.view_history {
+                    s.emit("force-login", "You need to be logged in to view previous messages.").ok();
+                    return;
+                }
+            }
+            Err(e) => {
+                error!("Database error: {}", e);
+                s.emit("force-login", "Server error during authentication.").ok();
+                return;
+            }
+        }
+
         let rows_query = if let Some(last) = data.last {
             sqlx::query_as!(
                 MessageEvent,
@@ -292,9 +295,18 @@ async fn on_load_more_messages(
         };
 
         if let Ok(msgs) = rows_query {
-            s.emit("older-msgs", &PreviousMsgEvent { msgs: &msgs }).ok();
+            match serde_json::to_string(&msgs) {
+                Ok(json_string) => {
+                    if let Err(err) = s.emit("older-msgs", &json_string) {
+                        error!("Failed to send previous messages: {}", err);
+                    }
+                }
+                Err(err) => {
+                    error!("Failed to serialize previous messages: {}", err);
+                }
+            }
         } else {
-            tracing::error!("Database error: {}", rows_query.unwrap_err());
+            error!("Database error: {}", rows_query.unwrap_err());
             return;
         }
     }
