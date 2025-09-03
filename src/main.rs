@@ -11,6 +11,7 @@ use socketioxide::{
     SocketIo,
 };
 use sqlx::postgres::PgPoolOptions;
+use tokio::net::{TcpListener, UnixListener};
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::{error, info};
@@ -348,7 +349,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let shared_state = Arc::new(SharedState {
-        // Wrap in Arc
         db,
         users: Arc::new(Mutex::new(HashSet::new())),
         batch_size,
@@ -364,6 +364,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         s.on_disconnect(on_disconnect);
     });
 
+
+    // Parse command-line arguments
+    let args: Vec<String> = std::env::args().collect();
+    let mut port = "8090".to_string();
+    let mut unix_socket = None;
+
+    let mut i = 1; // Skip program name
+    while i < args.len() {
+        if args[i] == "--unix" && i + 1 < args.len() {
+            unix_socket = Some(args[i + 1].clone());
+            i += 2; // Skip both --unix and the socket path
+        } else {
+            port = args[i].clone();
+            i += 1;
+        }
+    }
+
     let app = axum::Router::new()
         .fallback_service(ServeDir::new("html"))
         .layer(
@@ -372,11 +389,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(layer),
         );
 
-    let port = std::env::args().nth(1).unwrap_or("8090".to_string());
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
 
-    info!("Starting server on port {}", port);
-    axum::serve(listener, app).await?;
+    if let Some(socket_path) = unix_socket {
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        info!("Starting server on Unix socket: {}", socket_path);
+        axum::serve(listener, app).await?;
+
+    } else {
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+        info!("Starting server on port {}", port);
+        axum::serve(listener, app).await?;
+    }
+
 
     Ok(())
 }
