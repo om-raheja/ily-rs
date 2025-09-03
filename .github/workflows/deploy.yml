@@ -18,7 +18,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: |
-        cargo add sqlx-cli
+        cargo install sqlx-cli --no-default-features --features native-tls,postgres
         sqlx database create
         sqlx migrate run
         cargo build --release 
