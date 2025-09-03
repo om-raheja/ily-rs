@@ -1,0 +1,43 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --release --verbose
+
+    - name: SSH-SCP-SSH Pipeline
+      uses: kangketikonlen/ssh-pipeline@v0.0.3
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        user: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        known_hosts: ${{ secrets.SSH_KNOWNHOSTS }}
+        connect_timeout: 5m 
+        first_ssh: |
+          mkdir -p $HOME/ily-rs/html
+          systemctl --user stop ily-rs
+          |
+        # Multiline block of files to copy. Format: 'local/path => remote/path'
+        scp: |
+          html/* => ily-rs/html/
+          target/release/ily-rs => ily-rs/ily-rs
+          |
+        # Multiline block of commands to run after the SCP transfer.
+        last_ssh: |
+          systemctl --user start ily-rs
+          |
+    
