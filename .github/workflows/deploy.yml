@@ -1,0 +1,66 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  DATABASE_URL: ${{ secrets.DB_URL }}
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cargo install sqlx-cli --no-default-features --features native-tls,postgres
+        sqlx database create
+        sqlx migrate run
+        cargo build --release 
+        mv target/release/ily-rs .
+
+    - name: SSH Remote Commands
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        timeout: 5m 
+        script: |
+          mkdir -p $HOME/ily-rs/html
+          systemctl --user stop ily-rs
+
+    - name: Copy files via SSH
+      uses: appleboy/scp-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        source: "html/*"
+        target: ily-rs/
+        
+    - name: Copy files via SSH
+      uses: appleboy/scp-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        source: "ily-rs"
+        target: ily-rs/
+
+    - name: SSH Remote Commands
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        timeout: 5m 
+        script: |
+          systemctl --user start ily-rs
+    
