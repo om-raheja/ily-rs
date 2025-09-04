@@ -13,7 +13,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: chekist32/sqlx-cli:latest
 
     steps:
     - name: Cargo Cache
@@ -38,7 +37,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: |
-        # cargo install sqlx-cli --no-default-features --features native-tls,postgres
+        cargo install sqlx-cli --no-default-features --features native-tls,postgres
         sqlx database create
         sqlx migrate run
         cargo build --release 
