@@ -16,7 +16,7 @@ jobs:
 
     steps:
     - name: Cargo Cache
-      uses: actions/cache@v1
+      uses: actions/cache@v4.2.4
       with:
         path: ~/.cargo
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
@@ -25,7 +25,7 @@ jobs:
           ${{ runner.os }}-cargo
 
     - name: Cargo Target Cache
-      uses: actions/cache@v1
+      uses: actions/cache@v4.2.4
       with:
         path: target
         key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
