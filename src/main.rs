@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use bcrypt::verify;
+use dashmap::DashMap;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use socketioxide::{
@@ -18,14 +19,17 @@ use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Debug, Clone)]
-struct SharedState {
-    db: sqlx::PgPool,
-    users: Arc<Mutex<HashSet<String>>>,
-    batch_size: i64,
+struct SocketData {
+    nick: String,
+    channels: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-struct Username(String);
+struct SharedState {
+    db: sqlx::PgPool,
+    users: Arc<DashMap<String, Arc<Mutex<HashSet<String>>>>>,
+    batch_size: i64,
+}
 
 #[derive(Deserialize, Serialize)]
 struct LoginData {
@@ -36,11 +40,19 @@ struct LoginData {
 #[derive(Deserialize)]
 struct SendMsgData {
     text: String,
+    channel: String,
+}
+
+#[derive(Deserialize)]
+struct TypingData {
+    channel: String,
+    typing: bool,
 }
 
 #[derive(Deserialize)]
 struct LoadMoreMessagesData {
     last: Option<i32>,
+    channel: String,
 }
 
 #[derive(Serialize)]
@@ -49,11 +61,13 @@ where
     T: IntoIterator<Item = String> + Serialize,
 {
     users: &'a T,
+    channel: String,
 }
 
 #[derive(Serialize)]
 struct UserEvent<'a> {
     nick: &'a str,
+    channel: String,
 }
 
 #[derive(Debug)]
@@ -84,6 +98,8 @@ struct MessageEvent {
     #[serde(with = "time::serde::timestamp::milliseconds")]
     #[serde(rename = "time")]
     sent_at: OffsetDateTime,
+
+    channel: String,
 }
 
 async fn on_login(
@@ -104,7 +120,7 @@ async fn on_login(
     }
 
     match sqlx::query!(
-        "SELECT password_hash, view_history FROM users WHERE username = $1",
+        "SELECT password_hash, view_history, channels FROM users WHERE username = $1",
         nick
     )
     .fetch_optional(&state.db)
@@ -120,39 +136,35 @@ async fn on_login(
                 )
                 .ok();
             } else {
-                let mut is_new = false;
-                if let Ok(mut users) = state.users.lock() {
-                    is_new = users.insert(nick.to_string());
+                for channel in &row.channels {
+                    let mut is_new = false;
+                    // Use entry API to ensure the channel exists, then clone the Arc
+                    let users_arc = state.users
+                        .entry(channel.clone())
+                        .or_insert_with(|| Arc::new(Mutex::new(HashSet::new())))
+                        .clone(); // Clone the Arc to avoid holding the DashMap lock
 
-                    s.extensions.insert(Username(nick.to_string()));
-                    s.join("main");
+                    // Lock the Mutex from the cloned Arc
+                    if let Ok(mut users) = users_arc.lock() {
+                        is_new = users.insert(nick.to_string());
+                        s.emit("start", &StartEvent { 
+                            users: &*users, 
+                            channel: channel.to_string() }).ok();
+                    }
 
-                    s.emit("start", &StartEvent { users: &*users }).ok();
-                }
-
-                if is_new {
-                    s.to("main")
-                        .emit("ue", &UserEvent { nick: nick })
-                        .await
-                        .ok();
-                }
-
-                if row.view_history {
-                    println!("Viewing history");
-                    let rows_query = sqlx::query_as!(
-                        MessageEvent,
-                        "SELECT username, message, sent_at, id 
-                        FROM messages 
-                        ORDER BY id 
-                        DESC LIMIT $1", state.batch_size
-                    ).fetch_all(&state.db).await;
-
-                    if let Ok(msgs) = rows_query {
-                        match serde_json::to_string(&msgs) {
+                    if is_new {
+                        let msg = UserEvent {
+                            nick: data.nick.as_ref(),
+                            channel: channel.to_string(),
+                        };
+                        match serde_json::to_string(&msg) {
                             Ok(json_string) => {
-                                if let Err(err) = s.emit("previous-msg", &json_string) {
-                                    error!("Failed to send previous messages: {}", err);
-                                }
+                                if let Err(err) = s.to(channel.to_string())
+                                    .emit("ue", &json_string).await {
+                                    error!("Failed to send message: {}", err);
+                                    s.emit("force-login", "Failed to send message.").ok();
+                                } 
+                                s.emit("ue", &json_string).ok();
                             }
                             Err(err) => {
                                 error!("Failed to serialize previous messages: {}", err);
@@ -160,6 +172,58 @@ async fn on_login(
                         }
                     }
                 }
+
+                println!("Viewing history");
+                let rows_query = sqlx::query_as!(
+                    MessageEvent,
+                    "
+                    WITH user_channels AS (
+                        SELECT 
+                            unnest(channels) as channel,
+                            unnest(view_history) as can_view
+                        FROM users 
+                        WHERE username = $1
+                    ),
+                    allowed_channels AS (
+                        SELECT channel 
+                        FROM user_channels 
+                        WHERE can_view = true
+                    )
+                    SELECT 
+                        username, message, sent_at, id, channel
+                    FROM 
+                        messages 
+                    WHERE 
+                        channel IN (SELECT channel FROM allowed_channels)
+                    ORDER BY 
+                        id DESC 
+                    LIMIT 
+                        $2
+                    ",
+                    nick,               // Username to look up permissions for
+                    state.batch_size
+                ).fetch_all(&state.db).await;
+
+                if let Ok(msgs) = rows_query {
+                    match serde_json::to_string(&msgs) {
+                        Ok(json_string) => {
+                            if let Err(err) = 
+                                s.emit("previous-msg", &json_string) {
+
+                                error!("Failed to send previous messages: {}", err);
+                            }
+                        }
+                        Err(err) => {
+                            error!("Failed to serialize previous messages: {}", err);
+                        }
+                    }
+                }
+
+                s.extensions.insert(SocketData {
+                    nick: nick.to_string(),
+                    channels: row.channels,
+                });
+
             }
         }
         Ok(None) => {
@@ -182,33 +246,36 @@ async fn on_login(
 
 async fn on_send_msg(
     s: SocketRef,
-    Data(data): Data<SendMsgData>,
+    Data(payload): Data<SendMsgData>,
     State(state): State<Arc<SharedState>>,
 ) {
-    if let Some(Username(nick)) = s.extensions.get::<Username>() {
+    if let Some(data) = s.extensions.get::<SocketData>() {
 
         if let Ok(row) = sqlx::query!(
-            "INSERT INTO messages (username, message) 
-            VALUES ($1, $2) 
+            "INSERT INTO messages (username, message, channel) 
+            VALUES ($1, $2, $3) 
             RETURNING id, sent_at",
-            nick,
-            data.text,
+            data.nick,
+            payload.text,
+            payload.channel,
         )
         .fetch_one(&state.db)
         .await
         {
             let msg = MessageEvent {
-                username: nick.clone(),
-                message: data.text.to_string(),
+                username: data.nick,
+                message: payload.text.to_string(),
                 id: row.id,
                 sent_at: row.sent_at.into(),
+                channel: payload.channel.clone(),
             };
 
             println!("broadcasting the message");
 
             match serde_json::to_string(&msg) {
                 Ok(json_string) => {
-                    if let Err(err) = s.to("main").emit("new-msg", &json_string).await {
+                    if let Err(err) = s.to(payload.channel.clone())
+                        .emit("new-msg", &json_string).await {
                         error!("Failed to send message: {}", err);
                         s.emit("force-login", "Failed to send message.").ok();
                     } 
@@ -228,38 +295,48 @@ async fn on_send_msg(
     }
 }
 
-async fn on_typing(s: SocketRef, Data(data): Data<bool>) {
-    if let Some(Username(nick)) = s.extensions.get::<Username>() {
-        s.broadcast()
-            .to("main")
-            .emit(
-                "typing",
-                &serde_json::json!({
-                    "status": data,
-                    "nick": nick
-                }),
-            )
-            .await
-            .ok();
+async fn on_typing(s: SocketRef, Data(payload): Data<TypingData>) {
+    if let Some(data) = s.extensions.get::<SocketData>() {
+        if data.channels.contains(&payload.channel) {
+            s.broadcast()
+                .to(payload.channel.clone())
+                .emit(
+                    "typing",
+                    &serde_json::json!({
+                        "status": payload.typing,
+                        "channel": payload.channel.clone(),
+                        "nick": data.nick
+                    }),
+                )
+                .await
+                .ok();
+        }
     }
 }
 
 async fn on_load_more_messages(
     s: SocketRef,
-    Data(data): Data<LoadMoreMessagesData>,
+    Data(payload): Data<LoadMoreMessagesData>,
     State(state): State<Arc<SharedState>>,
 ) {
-    if let Some(Username(nick)) = s.extensions.get::<Username>() {
+    if let Some(data) = s.extensions.get::<SocketData>() {
         match sqlx::query!(
-            "SELECT view_history FROM users WHERE username = $1",
-            nick
+            "SELECT 
+                (view_history[array_position(channels, $2)] = true) 
+                AS can_view 
+            FROM users 
+            WHERE username = $1",
+            data.nick, 
+            payload.channel,
         )
         .fetch_one(&state.db)
         .await
         {
             Ok(row) => {
-                if !row.view_history {
-                    s.emit("force-login", "You need to be logged in to view previous messages.").ok();
+                if let None = row.can_view {
+                    s.emit("force-login", 
+                        "You need to be logged in to view previous messages.")
+                        .ok();
                     return;
                 }
             }
@@ -270,26 +347,30 @@ async fn on_load_more_messages(
             }
         }
 
-        let rows_query = if let Some(last) = data.last {
+        let rows_query = if let Some(last) = payload.last {
             sqlx::query_as!(
                 MessageEvent,
-                "SELECT username, message, sent_at, id 
-                FROM messages WHERE id < $1 
+                "SELECT username, message, sent_at, id, channel
+                FROM messages 
+                WHERE id < $1 AND channel = $3
                 ORDER BY sent_at
                 DESC LIMIT $2",
                 last,
-                state.batch_size
+                state.batch_size,
+                payload.channel,
             )
             .fetch_all(&state.db)
             .await
         } else {
             sqlx::query_as!(
                 MessageEvent,
-                "SELECT username, message, sent_at, id 
+                "SELECT username, message, sent_at, id, channel
                 FROM messages 
+                WHERE channel = $2
                 ORDER BY sent_at
                 DESC LIMIT $1",
-                state.batch_size
+                state.batch_size,
+                payload.channel,
             )
             .fetch_all(&state.db)
             .await
@@ -314,20 +395,41 @@ async fn on_load_more_messages(
 }
 
 async fn on_disconnect(s: SocketRef, State(state): State<Arc<SharedState>>) {
-    if let Some(Username(nick)) = s.extensions.remove::<Username>() {
-        if let Ok(mut users) = state.users.lock() {
-            users.remove(&nick);
-        }
-
-        s.to("main")
-            .emit(
-                "ul",
-                &UserEvent {
-                    nick: nick.as_ref(),
-                },
-            )
-            .await
-            .ok();
+    if let Some(data) = s.extensions.remove::<SocketData>() {
+        for entry in state.users.iter() {
+            let channel = entry.key();
+            let user_set = entry.value();
+            
+            // Try to lock the Mutex, skip channel if failed
+            let mut contains = false;
+            if let Ok(mut locked_set) = user_set.lock() {
+                contains = locked_set.contains(&data.nick);
+                if contains {
+                    locked_set.remove(&data.nick);
+                } 
+            }
+            
+            if contains {
+                // Emit event after releasing the lock
+                let msg = UserEvent {
+                    nick: data.nick.as_ref(),
+                    channel: channel.clone(),
+                };
+                match serde_json::to_string(&msg) {
+                    Ok(json_string) => {
+                        if let Err(err) = s.to(channel.clone())
+                            .emit("ul", &json_string).await {
+                            error!("Failed to send message: {}", err);
+                            s.emit("force-login", "Failed to send message.").ok();
+                        } 
+                        s.emit("ul", &json_string).ok();
+                    }
+                    Err(err) => {
+                        error!("Failed to serialize previous messages: {}", err);
+                    }
+                }
+            }
+        } 
     }
 }
 
@@ -350,7 +452,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shared_state = Arc::new(SharedState {
         db,
-        users: Arc::new(Mutex::new(HashSet::new())),
+        users: Arc::new(DashMap::<String, Arc<Mutex<HashSet<String>>>>::new()),
         batch_size,
     });
 

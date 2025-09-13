@@ -18,6 +18,9 @@ var Chat = {
     my_nick: localStorage.nick || sessionStorage.nick || null,
     my_password: localStorage.password || sessionStorage.password || null,
 
+    // are credentials valid? use when reconnecting
+    valid_credentials: false,
+
 	is_focused: false,
 	is_online: false,
 	is_typing: false,
@@ -25,13 +28,15 @@ var Chat = {
 	last_sent_nick: null,
     last_msg_time: null,
 
+    channels: {},
+    current_channel: null,
+
 
 	original_title: document.title,
 	new_title: "New messages...",
 
     // older messages handling
     is_loading: false,
-    earliest_message_id: null,
     at_top: false,
 
 	scroll: function(){
@@ -226,7 +231,10 @@ var Chat = {
 
 		update: function(){
 			if(Chat.is_typing && Chat.textarea.value === ""){
-				Chat.socket.emit("typing", Chat.is_typing = false);
+				Chat.socket.emit("typing", { 
+                    typing: Chat.is_typing = false, 
+                    channel: Chat.current_channel,
+                });
 			}
 
 			if(!Chat.is_typing && Chat.textarea.value !== ""){
@@ -236,8 +244,8 @@ var Chat = {
 	},
 
     login: function() {
-        const username = Chat.username_input.value.trim();
-        const password = Chat.password_input.value.trim();
+        const username = Chat.username_input.value.trim() || my_nick;
+        const password = Chat.password_input.value.trim() || my_password;
         
         // Clear previous errors
         const errorEl = this.querySelector('.error');
@@ -257,6 +265,11 @@ var Chat = {
         if (typeof r === 'string') r = JSON.parse(r);
 
         console.log("New message received");
+
+        Chat.channels[r.channel]["messages"].push(r);
+
+        if (r.channel !== Chat.current_channel) return;
+
         const fromSelf = my_nick == r.f;
 
         var li = document.createElement('div');
@@ -495,7 +508,19 @@ var Chat = {
             document.getElementById('login-container').style.display = 'none';
             document.querySelector('.chat').style.display = '';
 
+            Chat.valid_credentials = true;
+
 			Chat.users.innerText = '';
+
+            if (!Chat.current_channel) {
+                Chat.current_channel = r.channel;
+            }
+
+            Chat.channels[r.channel] = {
+                users: new Set(r.users),
+                messages: [],
+                earliest_message_id: null
+            };
 
             console.log(r);
 			for(var user in r.users){
@@ -520,38 +545,53 @@ var Chat = {
             if (data.length === 0) {
                 return;    
             }
-            Chat.earliest_message_id = data[data.length - 1].id;
-            console.log("earliest_message_id: " + Chat.earliest_message_id);
+            Chat.channels[Chat.current_channel].earliest_message_id 
+                = earliest_id = data[data.length - 1].id;
+            console.log("earliest_message_id for channel " 
+                + Chat.current_channel + ": " + earliest_id);
 
             // backend sends in descending order
 			data.reverse().forEach(element => {
-				Chat.new_msg(element, false);
+
+                if (element.channel === Chat.current_channel) {
+				    Chat.new_msg(element, false);
+                }
 			});
 		},
 
 		// User joined room
 		enter: function(r){
-			console.log("User " + r.nick + " joined.");
+            if (typeof r === 'string') {
+                r = JSON.parse(r);
+            }
+			console.log("User " + r.nick + " joined " + r.channel);
 
-			var nick = document.createElement('li');
-			nick.innerText = r.nick;
-			Chat.users.appendChild(nick);
-			Chat.user.objects[r.nick] = nick;
+            Chat.channels[r.channel]["users"].add(r.nick);
+
+            if (r.channel === Chat.current_channel) {
+                var nick = document.createElement('li');
+                nick.innerText = r.nick;
+                Chat.users.appendChild(nick);
+                Chat.user.objects[r.nick] = nick;
+            }
 		},
 
 		// User left room
 		leave: function(r){
 			console.log("User " + r.nick + " left.");
 
+            Chat.channels[r.channel].delete(r.nick);
 			// Is not typing
 			Chat.typing.remove(r.nick);
 
-			// Remove user
-			if(Chat.user.objects.hasOwnProperty(r.nick)){
-				var element = Chat.user.objects[r.nick];
-				element.parentNode.removeChild(element);
-				delete Chat.user.objects[r.nick];
-			}
+            if (r.channel === Chat.current_channel) {
+			    // Remove user
+                if(Chat.user.objects.hasOwnProperty(r.nick)){
+                    var element = Chat.user.objects[r.nick];
+                    element.parentNode.removeChild(element);
+                    delete Chat.user.objects[r.nick];
+                }
+            }
 		}
 	},
 
@@ -567,7 +607,11 @@ var Chat = {
 		Chat.last_sent_nick = '';
 
 		// force user to login
-		Chat.force_login();
+        if (!Chat.valid_credentials) {
+		    Chat.force_login();
+        } else {
+            Chat.login();
+        } 
 	},
 
 	disconnect: function(){
@@ -594,6 +638,7 @@ var Chat = {
         // Request older messages from server
         Chat.socket.emit('load-more-messages', {
           last: Chat.earliest_message_id,
+          channel: Chat.current_channel,
         });
       } 
     },

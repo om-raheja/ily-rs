@@ -7,6 +7,7 @@ default-run = "ily-rs"
 [dependencies]
 axum = "0.8.4"
 bcrypt = "0.17.1"
+dashmap = "6.1.0"
 dotenv = "0.15.0"
 num-traits = "0.2.19"
 serde = { version = "1.0.219", features = ["derive"] }

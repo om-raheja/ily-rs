@@ -24,16 +24,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut password = String::new();
     get_response("Enter password", &mut password)?;
 
-    let view_history = loop {
-        print!("View history? [Y/n]: ");
+    let mut view_history = Vec::new();
+    let mut channels = Vec::new();
+
+    loop {
+        print!("Add channel? [Y/n]: ");
         io::stdout().flush()?;
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
         match input.to_lowercase().trim() {
-            "y" | "yes" | "" => break true,
-            "n" | "no" => break false,
+            "y" | "yes" | "" => {
+                let mut channel = String::new();
+                get_response("Enter channel", &mut channel)?;
+                channels.push(channel.trim().to_string());
+
+                let channel_view_history = loop {
+                    print!("View history? [Y/n]: ");
+                    io::stdout().flush()?;
+
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input)?;
+
+                    match input.to_lowercase().trim() {
+                        "y" | "yes" | "" => break true,
+                        "n" | "no" => break false,
+                        _ => {
+                            println!("Invalid input");
+                            continue;
+                        }
+                    }
+                };
+
+                view_history.push(channel_view_history);
+            }
+            "n" | "no" => break,
             _ => {
                 println!("Invalid input");
                 continue;
@@ -44,10 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let password_hash = hash(password.trim(), bcrypt_cost)?;
     println!("{}", password_hash);
     sqlx::query!(
-        "INSERT INTO users (username, password_hash, view_history) VALUES ($1, $2, $3)",
+        "INSERT INTO users 
+        (username, password_hash, view_history, channels) 
+        VALUES ($1, $2, $3, $4)",
         username.trim(),
         password_hash,
-        view_history
+        &view_history,
+        &channels
     )
     .execute(&db)
     .await?;
