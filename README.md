@@ -14,7 +14,7 @@ git clone https://github.com/om-raheja/ily-rs
 cd ily-rs
 ```
 
-First, get a PostgreSQL database URL and store it in the environment variable `DATABASE_URL` in your `.env` file.
+**First, get a PostgreSQL database URL and store it in the environment variable `DATABASE_URL` in your `.env` file.**
 
 Get `sqlx-cli` to set up the database.
 
